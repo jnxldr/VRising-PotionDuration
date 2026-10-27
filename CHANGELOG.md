@@ -1,0 +1,8 @@
+# Changelog
+
+## 1.0.0
+First release.
+- Potions and brews (`PotionMinutes`) and elixirs (`ElixirMinutes`) last a configurable time, 1 to 1440 minutes;
+  default 120 (base game 60).
+- The buff icon timer and the tooltips (bag item and buff icon) show the new time when the mod is installed on the player's game.
+- Advanced: `Include`, `Exclude`, and `DumpBuffs` to list every timed buff.

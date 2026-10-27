@@ -1,0 +1,8 @@
+bin/
+obj/
+dist/
+.vs/
+*.user
+# Game interop assemblies: copied from a BepInEx install (see BUILDING.md), never committed
+interop/
+interop-client/
