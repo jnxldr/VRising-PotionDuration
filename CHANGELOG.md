@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0
+- Imbuements (weapon coatings: Blood, Chaos, Frost, Illusion, Storm, Unholy) last `ImbuementMinutes`, 1 to 1440 minutes;
+  default 120 (base game 60). The coating tooltips follow.
+- The imbuement's buff icon shows its timer above 60 minutes when the mod is installed on the player's game
+  (the base game's icon shows no timer then).
+
 ## 1.0.0
 First release.
 - Potions and brews (`PotionMinutes`) and elixirs (`ElixirMinutes`) last a configurable time, 1 to 1440 minutes;

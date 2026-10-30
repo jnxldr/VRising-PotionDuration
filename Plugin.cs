@@ -14,6 +14,7 @@ using ProjectM.UI;
 using Unity.Collections;
 using Unity.Entities;
 using UnityEngine;
+using WeaponCoatingData = ProjectM.WeaponCoating.WeaponCoating;
 
 namespace PotionDuration;
 
@@ -25,6 +26,7 @@ public class Plugin : BasePlugin
     internal static ConfigEntry<bool> DumpBuffs;
     internal static ConfigEntry<int> PotionMinutes;
     internal static ConfigEntry<int> ElixirMinutes;
+    internal static ConfigEntry<int> ImbuementMinutes;
     internal static ConfigEntry<string> Include;
     internal static ConfigEntry<string> Exclude;
     internal static bool IsServer;
@@ -45,18 +47,26 @@ public class Plugin : BasePlugin
             new ConfigDescription("Duration in minutes for potions and brews (base game 60).\n" + examples, minutes));
         ElixirMinutes = Config.Bind("Duration", "ElixirMinutes", 120,
             new ConfigDescription("Duration in minutes for elixirs (base game 60).\n" + examples, minutes));
+        ImbuementMinutes = Config.Bind("Duration", "ImbuementMinutes", 120,
+            new ConfigDescription("Duration in minutes for imbuements (weapon coatings) (base game 60).\n" + examples, minutes));
         Include = Config.Bind("Selection", "Include", "",
             "Comma-separated buff names to treat as potions too (or as elixirs, if the name contains 'Elixir'). The buff must last 60 minutes in the base game.");
-        Exclude = Config.Bind("Selection", "Exclude", "", "Comma-separated buff names to leave unchanged.");
+        Exclude = Config.Bind("Selection", "Exclude", "", "Comma-separated buff or imbuement (weapon coating) names to leave unchanged.");
         DumpBuffs = Config.Bind("Discovery", "DumpBuffs", false,
             "Write every timed buff (name, ID, duration) to BepInEx/config/PotionDuration/buffs.csv at start, to find buff names.");
 
         // Server: change the buffs themselves. Client: change its own copy of the prefabs, which the item tooltips read.
         var isServer = IsServer = Paths.ProcessName.Equals("VRisingServer", StringComparison.OrdinalIgnoreCase);
         if (isServer) _harmony = Harmony.CreateAndPatchAll(typeof(ServerReadyPatch), MyPluginInfo.PLUGIN_GUID);
-        else AddComponent<ClientWorldWatcher>();
+        else
+        {
+            AddComponent<ClientWorldWatcher>();
+            AddComponent<ImbuementIconFixer>();
+            _harmony = Harmony.CreateAndPatchAll(typeof(CoatingServerTimePatch), MyPluginInfo.PLUGIN_GUID);
+        }
         Log.LogInfo($"{MyPluginInfo.PLUGIN_NAME} {MyPluginInfo.PLUGIN_VERSION} loaded on {(isServer ? "server" : "client")} " +
-            $"(Enabled={Enabled.Value}, PotionMinutes={PotionMinutes.Value}, ElixirMinutes={ElixirMinutes.Value}, DumpBuffs={DumpBuffs.Value})");
+            $"(Enabled={Enabled.Value}, PotionMinutes={PotionMinutes.Value}, ElixirMinutes={ElixirMinutes.Value}, " +
+            $"ImbuementMinutes={ImbuementMinutes.Value}, DumpBuffs={DumpBuffs.Value})");
     }
 
     public override bool Unload()
@@ -73,7 +83,11 @@ public class Plugin : BasePlugin
         {
             if (DumpBuffs.Value) BuffDump.Write(world);
             var changed = DurationPatcher.Apply(world);
-            if (!IsServer) TooltipPatcher.Apply(world, changed);
+            if (!IsServer)
+            {
+                TooltipPatcher.Apply(world, changed);
+                ImbuementIconFixer.ClientWorld = world;
+            }
         }
         catch (Exception e)
         {
@@ -129,6 +143,144 @@ public class ClientWorldWatcher : MonoBehaviour
     }
 }
 
+// Client only. The buff bar builds the imbuement icon's entry with a fixed 60-minute total (LifeTime 3600,
+// Age = 3600 - time left), so with more than 60 minutes left the age is negative and the icon shows no timer.
+// Writing a corrected entry back into the game's list crashed the client, so this hook only records the server time;
+// ImbuementIconFixer then corrects the icon's text and progress ring after the HUD has drawn it.
+[HarmonyPatch(typeof(BuffBarParentSystem), nameof(BuffBarParentSystem.AddWeaponCoatingExpireEntry))]
+static class CoatingServerTimePatch
+{
+    internal static double ServerTime = -1;
+    internal static double RealTimeAt;
+
+    static void Postfix(ServerTime serverTime)
+    {
+        ServerTime = serverTime.Time;
+        RealTimeAt = Time.realtimeSinceStartupAsDouble;
+    }
+}
+
+public class ImbuementIconFixer : MonoBehaviour
+{
+    const float VanillaSeconds = 3600f;
+    internal static World ClientWorld;
+    internal static readonly HashSet<int> CoatingGuids = new();
+
+    // The HUD hides the icon's own time text and ring every frame, so the fixer shows copies of them that the HUD doesn't know about.
+    class Overlay
+    {
+        public BuffBarEntry Entry;
+        public GameObject Text, Ring;
+        public LocalizedText Label;
+        public UnityEngine.UI.Image RingImage;
+        public string LastText;
+    }
+
+    readonly Dictionary<IntPtr, Overlay> _overlays = new();
+    readonly List<IntPtr> _gone = new();
+    float _nextScan;
+    string _hoursFormat;
+
+    public ImbuementIconFixer(IntPtr ptr) : base(ptr) { }
+
+    void LateUpdate()
+    {
+        if (!Plugin.Enabled.Value || CoatingGuids.Count == 0) return;
+        try
+        {
+            var world = ClientWorld;
+            if (world == null || !world.IsCreated || CoatingServerTimePatch.ServerTime < 0) return;
+            if (Time.unscaledTime >= _nextScan)
+            {
+                _nextScan = Time.unscaledTime + 1f;
+                var found = UnityEngine.Object.FindObjectsOfType(Il2CppType.Of<BuffBarEntry>());
+                for (int i = 0; i < found.Length; i++)
+                {
+                    var e = found[i].TryCast<BuffBarEntry>();
+                    if (e == null || _overlays.ContainsKey(e.Pointer) || !CoatingGuids.Contains(e.PrefabGUID.GuidHash)) continue;
+                    if (e.TimeLeft == null || e.Progress == null) continue;
+                    _overlays[e.Pointer] = CreateOverlay(e);
+                }
+            }
+            if (_overlays.Count == 0) return;
+
+            var em = world.EntityManager;
+            var coatableType = new ComponentType(Il2CppType.Of<ProjectM.WeaponCoating.Coatable>(), ComponentType.AccessMode.ReadOnly);
+            var now = CoatingServerTimePatch.ServerTime + (Time.realtimeSinceStartupAsDouble - CoatingServerTimePatch.RealTimeAt);
+            var total = Plugin.ImbuementMinutes.Value * 60f;
+
+            foreach (var (key, o) in _overlays)
+            {
+                var e = o.Entry;
+                if (e == null || o.Text == null || o.Ring == null)
+                {
+                    _gone.Add(key);
+                    continue;
+                }
+                // The HUD reuses entries for other buffs; at 60 minutes or less the game's own timer is right.
+                float left = 0;
+                var show = CoatingGuids.Contains(e.PrefabGUID.GuidHash) && em.Exists(e.Entity) && em.HasComponent(e.Entity, coatableType);
+                if (show)
+                {
+                    left = (float)(em.GetComponentData<ProjectM.WeaponCoating.Coatable>(e.Entity).CoatingExpireTime - now);
+                    show = left > VanillaSeconds;
+                }
+                if (o.Text.activeSelf != show) o.Text.SetActive(show);
+                if (o.Ring.activeSelf != show) o.Ring.SetActive(show);
+                if (!show) continue;
+
+                var text = Hours(e, Mathf.CeilToInt(left / 3600f));
+                if (text != o.LastText)
+                {
+                    o.Label.ForceSet(text);
+                    o.LastText = text;
+                }
+                o.RingImage.fillAmount = Mathf.Clamp01(1f - left / Math.Max(total, left));
+            }
+            foreach (var key in _gone) _overlays.Remove(key);
+            _gone.Clear();
+        }
+        catch (Exception ex)
+        {
+            Plugin.Logger.LogError($"Imbuement icon fix failed: {ex}");
+            enabled = false;
+        }
+    }
+
+    static Overlay CreateOverlay(BuffBarEntry e)
+    {
+        var o = new Overlay { Entry = e };
+        o.Ring = Copy(e.Progress.gameObject, "PotionDuration_Progress");
+        o.RingImage = o.Ring.GetComponent<UnityEngine.UI.Image>();
+        o.Text = Copy(e.TimeLeft.gameObject, "PotionDuration_TimeLeft");
+        o.Label = o.Text.GetComponent<LocalizedText>();
+        return o;
+    }
+
+    // Copy placed right after the original, so it draws in the same order.
+    static GameObject Copy(GameObject original, string name)
+    {
+        var copy = UnityEngine.Object.Instantiate(original, original.transform.parent);
+        copy.name = name;
+        copy.transform.SetSiblingIndex(original.transform.GetSiblingIndex() + 1);
+        copy.SetActive(false);
+        return copy;
+    }
+
+    // The game's hours string for the player's language ("{value}h" in English).
+    string Hours(BuffBarEntry e, int hours)
+    {
+        if (_hoursFormat == null)
+        {
+            try { _hoursFormat = Stunlock.Localization.Localization.Get(e.LKey_Hours, false) ?? ""; }
+            catch { _hoursFormat = ""; }
+        }
+        if (_hoursFormat.Contains("{value}")) return _hoursFormat.Replace("{value}", hours.ToString());
+        if (_hoursFormat.Contains("{0}")) return _hoursFormat.Replace("{0}", hours.ToString());
+        return hours + "h";
+    }
+}
+
 static class DurationPatcher
 {
     const float VanillaSeconds = 3600f;
@@ -149,7 +301,7 @@ static class DurationPatcher
     static HashSet<string> NameList(string value) =>
         new(value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.Ordinal);
 
-    // Returns the changed buff prefab names with their kind ("potion" or "elixir").
+    // Returns the changed prefab names with their kind ("potion", "elixir" or "coating"), for the tooltips.
     public static Dictionary<string, string> Apply(World world)
     {
         var em = world.EntityManager;
@@ -219,7 +371,58 @@ static class DurationPatcher
             $"{skipped} skipped, {unconverted} not converted at start";
         if (changed == 0) Plugin.Logger.LogWarning(summary + ". Nothing matched: a game patch may have renamed the buffs; re-run DumpBuffs.");
         else Plugin.Logger.LogInfo(summary);
+
+        ApplyCoatings(world, exclude, changedBuffs);
         return changedBuffs;
+    }
+
+    // Weapon coatings aren't timed buffs: the coating prefab's WeaponCoating.ExpireDuration is copied to the weapon's
+    // Coatable.CoatingExpireTime when the coating is applied, and the buff icon timer reads that. Found by component, not name.
+    // Adds the changed coatings and their buffs to `changed` (kind "coating") so their tooltips follow.
+    static void ApplyCoatings(World world, HashSet<string> exclude, Dictionary<string, string> changed)
+    {
+        var em = world.EntityManager;
+        var pcs = world.GetExistingSystemManaged<PrefabCollectionSystem>();
+        var lookup = pcs._PrefabLookupMap;
+        var coatingType = new ComponentType(Il2CppType.Of<WeaponCoatingData>(), ComponentType.AccessMode.ReadWrite);
+        var seconds = Plugin.ImbuementMinutes.Value * 60f;
+
+        int count = 0, skipped = 0;
+        var kvs = pcs._PrefabGuidToEntityMap.GetKeyValueArrays(Allocator.Temp);
+        try
+        {
+            for (int i = 0; i < kvs.Length; i++)
+            {
+                var entity = kvs.Values[i];
+                if (!em.HasComponent(entity, coatingType)) continue;
+                var name = lookup.GetName(kvs.Keys[i]) ?? "";
+                var coating = em.GetComponentData<WeaponCoatingData>(entity);
+                var buffName = lookup.GetName(coating.BuffId) ?? "";
+                if (exclude.Contains(name)) continue;
+                if (coating.ExpireDuration != VanillaSeconds)
+                {
+                    skipped++;
+                    Plugin.Logger.LogWarning($"Skipped imbuement {name} ({kvs.Keys[i].GuidHash}): vanilla duration {coating.ExpireDuration}s, not {VanillaSeconds}s");
+                    continue;
+                }
+                var old = coating.ExpireDuration;
+                coating.ExpireDuration = seconds;
+                em.SetComponentData(entity, coating);
+                count++;
+                ImbuementIconFixer.CoatingGuids.Add(kvs.Keys[i].GuidHash);
+                changed[name] = "coating";
+                if (buffName != "") changed[buffName] = "coating";
+                Plugin.Logger.LogInfo($"Changed imbuement {name} ({kvs.Keys[i].GuidHash}, buff {buffName}): {old}s -> {coating.ExpireDuration}s");
+            }
+        }
+        finally
+        {
+            kvs.Dispose();
+        }
+
+        var summary = $"[{world.Name}] {count} imbuements (weapon coatings) changed ({Plugin.ImbuementMinutes.Value} min), {skipped} skipped";
+        if (count == 0) Plugin.Logger.LogWarning(summary + ". No imbuement found: a game patch may have changed how weapon coatings work.");
+        else Plugin.Logger.LogInfo(summary);
     }
 }
 
@@ -239,13 +442,15 @@ static class TooltipPatcher
         var pcs = world.GetExistingSystemManaged<PrefabCollectionSystem>();
         var lookup = pcs._PrefabLookupMap;
         var paramType = new ComponentType(Il2CppType.Of<LocalizedStringBuilderParameter>(), ComponentType.AccessMode.ReadWrite);
-        // AB_Consumable_SunResistancePotion_T01_Buff -> sunresistancepotiont01, AB_Elixir_Bat_T01_Buff -> elixirbatt01;
-        // the item, buff and recipe prefabs of one potion share that stem.
-        var stems = changedBuffs.ToDictionary(kv => Normalize(Regex.Replace(kv.Key, @"^AB_(Consumable_)?|_Buff$", "")), kv => kv.Value);
+        // AB_Consumable_SunResistancePotion_T01_Buff -> sunresistancepotiont01, AB_Elixir_Bat_T01_Buff -> elixirbatt01,
+        // Item_Vampire_Coating_Blood -> vampirecoatingblood; the item, buff and recipe prefabs of one potion share that stem.
+        var stems = new Dictionary<string, string>();
+        foreach (var kv in changedBuffs) stems[Normalize(Regex.Replace(kv.Key, @"^(AB_|Item_)(Consumable_)?|_Buff$", ""))] = kv.Value;
         var minutes = new Dictionary<string, string>
         {
             ["potion"] = Plugin.PotionMinutes.Value.ToString(),
             ["elixir"] = Plugin.ElixirMinutes.Value.ToString(),
+            ["coating"] = Plugin.ImbuementMinutes.Value.ToString(),
         };
 
         int withParams = 0, changed = 0, other = 0;
@@ -297,7 +502,7 @@ static class TooltipPatcher
 
         var summary = $"[{world.Name}] tooltips: {changed} duration values changed, {other} other 60-minute values left vanilla, " +
             $"{withParams} prefabs with description parameters";
-        if (changed == 0) Plugin.Logger.LogWarning(summary + ". No potion/elixir tooltip changed.");
+        if (changed == 0) Plugin.Logger.LogWarning(summary + ". No potion/elixir/imbuement tooltip changed.");
         else Plugin.Logger.LogInfo(summary);
     }
 }

@@ -15,7 +15,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parent
-DESCRIPTION = ("Potions, brews and elixirs last as long as you choose (default 2 hours instead of 60 minutes). "
+DESCRIPTION = ("Potions, brews, elixirs and imbuements (weapon coatings) last as long as you choose (default 2 hours instead of 60 minutes). "
                "Install on the server. Install on the client so tooltips show the new time, otherwise they will show the default 60 minutes.")
 DEPENDENCIES = ["BepInEx-BepInExPack_V_Rising-1.733.2"]
 
