@@ -65,6 +65,16 @@ Changes apply the next time the server or game starts. A potion or imbuement tha
 - A game update can rename buffs. If the server log says `0 buff prefabs changed`, the mod needs an update.
 - To remove the mod, uninstall it in your mod manager, or delete `PotionDuration.dll` (and `PotionDuration.cfg`) and restart.
 
+## Credits
+- Project setup (BepInEx packages and NuGet feeds) modelled on [ScarletBrazier](https://thunderstore.io/c/v-rising/p/ScarletMods/ScarletBrazier/) by markvaaz; its change to braziers' burn time also gave the idea
+  of changing a duration in the game's own data.
+- The "server has finished loading" hook (a Harmony postfix on `SpawnTeamSystem_OnPersistenceLoad`) is a common pattern
+  in V Rising mods, e.g. [KindredCommands](https://thunderstore.io/c/v-rising/p/odjit/KindredCommands/) by odjit, [ScarletCore](https://thunderstore.io/c/v-rising/p/ScarletMods/ScarletCore/) and [Bloodcraft](https://thunderstore.io/c/v-rising/p/zfolmt/Bloodcraft/) by zfolmt.
+- Built with [BepInExPack V Rising](https://thunderstore.io/c/v-rising/p/BepInEx/BepInExPack_V_Rising/) (BepInEx, HarmonyX,
+  Il2CppInterop).
+
+No code was copied from these mods; thanks to their authors for showing the way.
+
 ## Transparency
 This mod was made with [Claude Code](https://claude.com/claude-code), Anthropic's AI coding assistant. Claude worked out
 how the game stores potion and imbuement durations and tooltip text, and wrote the code and documentation; I decided what the mod

@@ -3,7 +3,7 @@
     <TargetFramework>net6.0</TargetFramework>
     <AssemblyName>PotionDuration</AssemblyName>
     <Description>Configurable duration for V Rising potions, elixirs and imbuements (weapon coatings)</Description>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
     <RootNamespace>PotionDuration</RootNamespace>

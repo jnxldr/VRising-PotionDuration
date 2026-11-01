@@ -28,8 +28,8 @@ One DLL works on both server and client; the release is built against the client
 ## Thunderstore package
 `python -I thunderstore/pack.py` builds the DLL (against `interop-client/` by default) and writes
 `dist/PotionDuration-<version>.zip` with `manifest.json`, `README.md`, `CHANGELOG.md`, `icon.png` and the DLL, all at the zip
-root. The version comes from `PotionDuration.csproj`; the description and dependency are in `pack.py`. The icon is drawn by
-`thunderstore/make_icon.py`.
+root. The version comes from `PotionDuration.csproj`; the description and dependency are in `pack.py`. The icon is
+`thunderstore/icon.png`.
 
 ## How it works
 - **Server:** once the server has loaded (`SpawnTeamSystem_OnPersistenceLoad`), sets `LifeTime.Duration` on the 60-minute buff

@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.1.1
+New icon; README gains a Credits section. No code changes: the mod works exactly as 1.1.0, so updating is optional.
+
 ## 1.1.0
 - Imbuements (weapon coatings: Blood, Chaos, Frost, Illusion, Storm, Unholy) last `ImbuementMinutes`, 1 to 1440 minutes;
   default 120 (base game 60). The coating tooltips follow.
